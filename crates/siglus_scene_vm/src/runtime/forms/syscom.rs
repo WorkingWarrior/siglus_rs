@@ -783,6 +783,31 @@ fn local_save_available(ctx: &CommandContext) -> bool {
         || ctx.pending_auto_savepoint
 }
 
+/// Re:Boot's R3 shortcut uses Siglus quick slots, rotating independently of
+/// manual saves. Keep the actual write on the host's normal SAVEPOINT path.
+pub(crate) fn request_gamepad_quick_save(ctx: &mut CommandContext) -> bool {
+    let count = configured_save_count(ctx, true);
+    if count == 0 || ctx.globals.syscom.save_feature.check_enabled() == 0
+        || !local_save_available(ctx)
+    {
+        return false;
+    }
+    sync_save_slots_from_disk(ctx, true);
+    let newest = newest_slot_in_range(&ctx.globals.syscom.quick_save_slots, 0, count as i64, count);
+    let next = (newest + 1) as usize % count;
+    prepare_runtime_save_thumb_capture(ctx);
+    ctx.globals.syscom.read_skip.onoff = false;
+    ctx.globals.syscom.pending_proc = Some(SyscomPendingProc {
+        kind: SyscomPendingProcKind::QuickSave,
+        warning: false,
+        se_play: false,
+        fade_out: false,
+        leave_msgbk: false,
+        save_id: next as i64,
+    });
+    true
+}
+
 /// Shared END_SAVE path, also used after END_GAME confirmation. The original
 /// tnm_syscom_end_game calls tnm_syscom_end_save(false, false) before the wipe;
 /// declining the exit warning must never reach this operation.

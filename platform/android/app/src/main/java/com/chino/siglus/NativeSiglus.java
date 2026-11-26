@@ -51,5 +51,6 @@ public final class NativeSiglus {
     /** Forward a raw key code to the engine (0x1B = Escape, the game's cancel/back key). */
     public static native void keyDown(long handle, int keyCode);
     public static native void keyUp(long handle, int keyCode);
+    public static native void gamepadButton(long handle, int button, boolean down, boolean cancelled);
     public static native void destroy(long handle);
 }

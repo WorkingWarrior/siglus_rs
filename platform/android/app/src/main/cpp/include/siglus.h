@@ -2,6 +2,7 @@
 #define SIGLUS_H
 
 #include <stdint.h>
+#include <stdbool.h>
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
 #endif
@@ -72,6 +73,7 @@ void siglus_android_set_surface(
     uint32_t surface_width_px,
     uint32_t surface_height_px);
 void siglus_android_touch(void *handle, int32_t phase, double x_px, double y_px);
+void siglus_android_gamepad_button(void *handle, uint8_t button, bool down, bool cancelled);
 void siglus_android_text_input(void *handle, const char *text_utf8);
 void siglus_android_ime_preedit(void *handle, const char *text_utf8, int32_t cursor_start, int32_t cursor_end);
 /* Mobile key entry point with desktop KeyboardInput semantics (repeat-safe). */

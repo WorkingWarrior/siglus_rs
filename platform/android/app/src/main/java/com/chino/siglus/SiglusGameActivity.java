@@ -1,9 +1,11 @@
 package com.chino.siglus;
 
+import android.hardware.input.InputManager;
 import android.os.Bundle;
 import android.os.SystemClock;
 import android.util.DisplayMetrics;
 import android.view.Choreographer;
+import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
@@ -36,7 +38,8 @@ import java.nio.charset.StandardCharsets;
  * - Rust is stepped via siglus_android_* exported symbols
  */
 public final class SiglusGameActivity extends AppCompatActivity
-        implements SurfaceHolder.Callback, Choreographer.FrameCallback, View.OnTouchListener {
+        implements SurfaceHolder.Callback, Choreographer.FrameCallback, View.OnTouchListener,
+        InputManager.InputDeviceListener {
 
     private static final ConcurrentHashMap<Long, WeakReference<SiglusGameActivity>> sActivitiesByHandle = new ConcurrentHashMap<>();
 
@@ -63,6 +66,8 @@ public final class SiglusGameActivity extends AppCompatActivity
     private SurfaceView surfaceView;
 
     private long handle = 0;
+    private final SiglusGamepad gamepad = new SiglusGamepad(
+            (button, down, cancelled) -> NativeSiglus.gamepadButton(handle, button, down, cancelled));
     private boolean running = false;
     /**
      * True while {@link #surfaceView} has a usable {@link Surface}. Android destroys the
@@ -140,12 +145,21 @@ public final class SiglusGameActivity extends AppCompatActivity
     @Override
     protected void onResume() {
         super.onResume();
+        InputManager inputManager = getSystemService(InputManager.class);
+        if (inputManager != null) {
+            inputManager.registerInputDeviceListener(this, null);
+        }
         applyImmersive();
         maybeStartFrameLoop();
     }
 
     @Override
     protected void onPause() {
+        InputManager inputManager = getSystemService(InputManager.class);
+        if (inputManager != null) {
+            inputManager.unregisterInputDeviceListener(this);
+        }
+        gamepad.releaseAll();
         stopFrameLoop();
         super.onPause();
     }
@@ -298,6 +312,39 @@ public final class SiglusGameActivity extends AppCompatActivity
         }
 
         Choreographer.getInstance().postFrameCallback(this);
+    }
+
+    // ---- Controller ----
+
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        return (handle != 0 && gamepad.onKey(event)) || super.dispatchKeyEvent(event);
+    }
+
+    @Override
+    public boolean onGenericMotionEvent(MotionEvent event) {
+        return (handle != 0 && gamepad.onMotion(event)) || super.onGenericMotionEvent(event);
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (!hasFocus) {
+            gamepad.releaseAll();
+        }
+    }
+
+    @Override
+    public void onInputDeviceAdded(int deviceId) {}
+
+    @Override
+    public void onInputDeviceChanged(int deviceId) {
+        gamepad.removeDevice(deviceId);
+    }
+
+    @Override
+    public void onInputDeviceRemoved(int deviceId) {
+        gamepad.removeDevice(deviceId);
     }
 
     // ---- Touch ----

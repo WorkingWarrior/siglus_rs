@@ -1592,6 +1592,10 @@ impl VmWait {
         }
     }
 
+    pub(crate) fn movie_waiting(&self) -> bool {
+        self.global_movie || self.movie.is_some()
+    }
+
     pub fn wait_global_movie(&mut self, key_skip: bool, return_value_flag: bool) {
         self.mark_block_request();
         self.global_movie = true;

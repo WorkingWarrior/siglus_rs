@@ -15462,7 +15462,7 @@ mod command_dispatch_tests {
         use crate::runtime::forms::{codes, excall};
         use crate::runtime::input::VmKey;
 
-        for compatibility in [false, true] {
+        for gamepad in [false, true] {
             let mut vm = test_vm();
             vm.exec_command(
                 vec![codes::ELM_GLOBAL_EXCALL, codes::ELM_EXCALL_ALLOC],
@@ -15527,20 +15527,25 @@ mod command_dispatch_tests {
             )
             .unwrap();
             let form = excall::tick_targets(&vm.ctx).stage_form_id;
-            let send = |vm: &mut SceneVm<'_>, key: VmKey, down: bool| {
-                if compatibility {
-                    if down {
-                        vm.ctx.on_compatibility_key_down(key);
-                    } else {
-                        vm.ctx.on_key_up(key);
-                    }
+            let mut pointer_buttons = 0;
+            let mut send = |vm: &mut SceneVm<'_>, key: VmKey, down: bool| {
+                if gamepad {
+                    let button = if key == VmKey::Enter { 0 } else { 15 };
+                    crate::host::apply_joypad_input(
+                        &mut vm.ctx,
+                        &mut pointer_buttons,
+                        button,
+                        down,
+                        false,
+                    );
+                    assert_eq!(vm.ctx.input.joypad_is_down(button), down);
                 } else if down {
                     vm.ctx.on_key_down(key);
                 } else {
                     vm.ctx.on_key_up(key);
                 }
             };
-            if !compatibility {
+            if !gamepad {
                 send(&mut vm, VmKey::ArrowDown, true);
                 assert_eq!(
                     vm.ctx.globals.stage_forms[&form].group_lists[&1][0].hit_button_no, -1,
@@ -15567,6 +15572,16 @@ mod command_dispatch_tests {
                 vm.ctx.globals.stage_forms[&form].group_lists[&1][0].decided_button_no,
                 3
             );
+            assert_eq!(pointer_buttons, 0);
+            vm.ctx.sync_script_input_from_runtime();
+            assert!(vm.ctx.script_input.joypad_down_stock(0));
+            assert!(vm.ctx.script_input.joypad_up_stock(0));
+            assert!(vm.ctx.script_input.joypad_down_up_stock(0));
+            crate::host::apply_joypad_input(&mut vm.ctx, &mut pointer_buttons, 31, true, false);
+            assert!(
+                vm.ctx.input.joypad_mode_active(),
+                "native input must remain available"
+            );
         }
     }
 
@@ -15574,7 +15589,6 @@ mod command_dispatch_tests {
     fn mwnd_selection_takes_priority_over_stage_buttons_on_gamepad() {
         use crate::runtime::forms::{codes, excall};
         use crate::runtime::globals::{MwndSelectionChoice, MwndSelectionState};
-        use crate::runtime::input::VmKey;
 
         let mut vm = test_vm();
         vm.exec_command(
@@ -15649,7 +15663,8 @@ mod command_dispatch_tests {
         });
         vm.ctx.globals.focused_stage_mwnd = Some((form, 0, 0));
 
-        assert!(!vm.ctx.on_compatibility_key_down(VmKey::ArrowDown));
+        let mut pointer_buttons = 0;
+        crate::host::apply_joypad_input(&mut vm.ctx, &mut pointer_buttons, 15, true, false);
         assert_eq!(
             vm.ctx.globals.stage_forms[&form].group_lists[&1][0].hit_button_no, -1,
             "stage button must not steal focus during mwnd selection"

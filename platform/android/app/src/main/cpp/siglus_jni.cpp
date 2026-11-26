@@ -32,6 +32,7 @@ using resize_fn_t = void (*)(void* handle, uint32_t w_px, uint32_t h_px);
 using set_surface_fn_t = int32_t (*)(void* handle, void* native_window_ptr, uint32_t w_px, uint32_t h_px);
 using touch_fn_t = void (*)(void* handle, int32_t phase, double x_px, double y_px);
 using key_fn_t = void (*)(void* handle, int32_t key_code);
+using gamepad_button_fn_t = void (*)(void* handle, uint8_t button, bool down, bool cancelled);
 using destroy_fn_t = void (*)(void* handle);
 using init_context_fn_t = void (*)(void* java_vm_ptr, void* app_context_global_ref);
 using string_free_fn_t = void (*)(char* ptr);
@@ -47,6 +48,7 @@ struct Api {
     touch_fn_t touch = nullptr;
     key_fn_t key_down = nullptr;
     key_fn_t key_up = nullptr;
+    gamepad_button_fn_t gamepad_button = nullptr;
     destroy_fn_t destroy = nullptr;
     init_context_fn_t init_context = nullptr;
     string_free_fn_t string_free = nullptr;
@@ -94,6 +96,7 @@ static void load_api_or_log() {
         g_api.touch = reinterpret_cast<touch_fn_t>(load_symbol("siglus_android_touch"));
         g_api.key_down = reinterpret_cast<key_fn_t>(load_symbol("siglus_android_key_down"));
         g_api.key_up = reinterpret_cast<key_fn_t>(load_symbol("siglus_android_key_up"));
+        g_api.gamepad_button = reinterpret_cast<gamepad_button_fn_t>(load_symbol("siglus_android_gamepad_button"));
         g_api.destroy = reinterpret_cast<destroy_fn_t>(load_symbol("siglus_android_destroy"));
         g_api.init_context = reinterpret_cast<init_context_fn_t>(load_symbol("siglus_android_init_context"));
         g_api.string_free = reinterpret_cast<string_free_fn_t>(load_symbol("siglus_string_free"));
@@ -458,6 +461,16 @@ Java_com_chino_siglus_NativeSiglus_keyUp(JNIEnv*, jclass, jlong handle, jint key
         return;
     }
     g_api.key_up(reinterpret_cast<void*>(handle), static_cast<int32_t>(key_code));
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_chino_siglus_NativeSiglus_gamepadButton(JNIEnv*, jclass, jlong handle, jint button, jboolean down, jboolean cancelled) {
+    load_api_or_log();
+    if (!g_api.gamepad_button || handle == 0 || button < 0 || button >= 32) {
+        return;
+    }
+    g_api.gamepad_button(reinterpret_cast<void*>(handle), static_cast<uint8_t>(button),
+                         down == JNI_TRUE, cancelled == JNI_TRUE);
 }
 
 extern "C" JNIEXPORT void JNICALL

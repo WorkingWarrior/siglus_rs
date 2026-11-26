@@ -415,6 +415,19 @@ pub unsafe extern "C" fn siglus_android_key_up(handle: *mut c_void, key_code: i3
     host.key_up_code(key_code);
 }
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn siglus_android_gamepad_button(
+    handle: *mut c_void,
+    button: u8,
+    down: bool,
+    cancelled: bool,
+) {
+    let Some(host) = (unsafe { (handle as *mut SiglusHost).as_mut() }) else {
+        return;
+    };
+    host.gamepad_button(usize::from(button), down, cancelled);
+}
+
 /// Key entry point for mobile hosts, matching the desktop `KeyboardInput` path:
 /// mapped codes are delivered as key downs (repeat Enter/Space/Escape ignored),
 /// unmapped codes trigger the wait-key notification unless an editbox is active,

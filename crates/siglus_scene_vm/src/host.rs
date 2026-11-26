@@ -23,13 +23,125 @@ use crate::runtime::globals::{
     SyscomPendingProc, SyscomPendingProcKind, SystemMessageBoxButton, SystemMessageBoxModalState,
     WipeState,
 };
-use crate::runtime::input::{VmKey, VmMouseButton};
+use crate::runtime::input::{JOYPAD_KEY_COUNT, VmKey, VmMouseButton};
 use crate::runtime::wait::VmWait;
 use crate::runtime::{CommandContext, FrameCaptureBackendRef, ProcKind, native_ui};
 use crate::scene_stream::SceneStream;
 use crate::vm::{SceneVm, VmConfig};
 
 const FRAME_INTERVAL_MS: u32 = 16;
+
+// Zero-based Siglus joypad indices, also used by the Switch input backend.
+const GAMEPAD_COMPATIBILITY_KEYS: [Option<VmKey>; 24] = [
+    Some(VmKey::Enter),     // A: advance / confirm
+    None,                  // B: cancel in menus / hide text in dialogue
+    None,                  // X: auto mode
+    None,                  // Y: backlog
+    None,                  // L3: unused in Re:Boot
+    None,                  // R3: quick save
+    None,                  // LB: hold force-skip
+    None,                  // RB: toggle read-skip
+    None,                  // LT: phone trigger (no Siglus equivalent)
+    None,                  // RT: phone trigger (no Siglus equivalent)
+    None,                  // Start: system menu
+    None,                  // Back / Select: TIPS (no Siglus equivalent)
+    Some(VmKey::ArrowLeft),
+    Some(VmKey::ArrowUp),
+    Some(VmKey::ArrowRight),
+    Some(VmKey::ArrowDown),
+    Some(VmKey::ArrowLeft),
+    Some(VmKey::ArrowUp),
+    Some(VmKey::ArrowRight),
+    Some(VmKey::ArrowDown),
+    Some(VmKey::ArrowLeft),
+    Some(VmKey::ArrowUp),
+    Some(VmKey::ArrowRight),
+    Some(VmKey::ArrowDown),
+];
+
+fn gamepad_action(button: usize) -> Option<crate::runtime::gamepad::GamepadAction> {
+    use crate::runtime::gamepad::GamepadAction::*;
+    Some(match button {
+        1 => Cancel,
+        2 => Auto,
+        3 => Backlog,
+        4 | 8 | 9 | 11 => Unassigned,
+        5 => QuickSave,
+        6 => HoldForceSkip,
+        7 => ToggleSkip,
+        10 => Menu,
+        _ => return None,
+    })
+}
+
+/// Keep a compatibility menu press in the pointer input family through its
+/// release. Anemoi ignores mouse/group decisions in its native joypad branch.
+/// Raw joypad stocks remain available to scripts in either input family.
+pub(crate) fn apply_joypad_input(
+    ctx: &mut CommandContext,
+    pointer_buttons: &mut u32,
+    button: usize,
+    down: bool,
+    cancelled: bool,
+) {
+    if button >= JOYPAD_KEY_COUNT {
+        return;
+    }
+    let bit = 1_u32 << button;
+    let mut pointer_input = *pointer_buttons & bit != 0;
+    if let Some(Some(key)) = GAMEPAD_COMPATIBILITY_KEYS.get(button) {
+        let shared = GAMEPAD_COMPATIBILITY_KEYS
+            .iter()
+            .enumerate()
+            .filter(|(other, mapped)| {
+                *other != button && **mapped == Some(*key) && ctx.input.joypad_is_down(*other)
+            })
+            .map(|(other, _)| 1_u32 << other)
+            .fold(0, |held, other| held | other);
+        if shared == 0 {
+            if down {
+                pointer_input = ctx.on_compatibility_key_down(*key);
+            } else if cancelled {
+                ctx.input.cancel_key(*key);
+            } else {
+                ctx.on_key_up(*key);
+            }
+        } else if down {
+            pointer_input = *pointer_buttons & shared != 0;
+        }
+    }
+    if let Some(action) = gamepad_action(button)
+        && action != crate::runtime::gamepad::GamepadAction::Unassigned
+    {
+        // Shared semantic bindings activate only on the first press.
+        let shared = (0..JOYPAD_KEY_COUNT).any(|other| {
+            other != button
+                && gamepad_action(other) == Some(action)
+                && ctx.input.joypad_is_down(other)
+        });
+        if !shared || cancelled {
+            ctx.on_gamepad_action(action, down, cancelled);
+        }
+        pointer_input = true;
+    }
+    if button == 1 {
+        // Cancel must not also execute the script's native-pad branch.
+        pointer_input = true;
+    }
+    if cancelled {
+        ctx.input.cancel_joypad_key(button);
+    } else {
+        ctx.on_joypad_button(button, down);
+    }
+    if pointer_input {
+        ctx.input.note_pointer_activity();
+    }
+    if down && pointer_input {
+        *pointer_buttons |= bit;
+    } else {
+        *pointer_buttons &= !bit;
+    }
+}
 
 // The Switch shell can persist these markers even when a startup abort occurs
 // before Rust's normal stderr is usable. Keep the instrumentation out of every
@@ -201,6 +313,7 @@ pub struct SiglusHost {
     vm: SceneVm<'static>,
     redraw_count: u32,
     script_needs_pump: bool,
+    pointer_gamepad_buttons: u32,
     script_resume_after_redraw: bool,
     suppress_render_once: bool,
     syscom_suspended_waits: Vec<(usize, VmWait, String)>,
@@ -304,6 +417,7 @@ impl SiglusHost {
             vm,
             redraw_count: 0,
             script_needs_pump: true,
+            pointer_gamepad_buttons: 0,
             script_resume_after_redraw: false,
             suppress_render_once: false,
             syscom_suspended_waits: Vec::new(),
@@ -508,13 +622,44 @@ impl SiglusHost {
     }
 
     /// Record a native controller edge without converting it into keyboard
-    /// activity. Platform backends may additionally send a compatibility key,
-    /// but should call this last so JOYPAD remains the active input family.
+    /// activity. Platform backends (such as Switch) may additionally send a
+    /// compatibility key, and call this last so JOYPAD remains the active
+    /// input family.
     pub fn joypad_button(&mut self, button: usize, down: bool) {
         if self.native_messagebox_pending() {
             return;
         }
         self.vm.ctx.on_joypad_button(button, down);
+        self.script_needs_pump = true;
+    }
+
+    /// Deliver an Android gamepad edge to compatibility bindings, VN actions,
+    /// and the raw joypad.
+    pub fn gamepad_button(&mut self, button: usize, down: bool, cancelled: bool) {
+        self.update_joypad_button(button, down, cancelled);
+    }
+
+    fn update_joypad_button(&mut self, button: usize, down: bool, cancelled: bool) {
+        let modal_pending = self.native_messagebox_pending();
+        if button >= JOYPAD_KEY_COUNT
+            || (modal_pending && down)
+            || (down && self.vm.ctx.input.joypad_is_down(button))
+        {
+            return;
+        }
+        // Menu scripts can clear raw input while a physical button remains held.
+        // Still deliver its eventual release so held-skip cannot latch on return.
+        let cancelled = cancelled
+            || modal_pending
+            || (!down && !self.vm.ctx.input.joypad_is_down(button));
+
+        apply_joypad_input(
+            &mut self.vm.ctx,
+            &mut self.pointer_gamepad_buttons,
+            button,
+            down,
+            cancelled,
+        );
         self.script_needs_pump = true;
     }
 
@@ -1851,4 +1996,68 @@ pub fn parse_bool_exit(result: Result<bool>, context: &str) -> i32 {
 
 pub fn default_frame_interval_ms(dt_ms: u32) -> u32 {
     if dt_ms == 0 { FRAME_INTERVAL_MS } else { dt_ms }
+}
+
+#[cfg(test)]
+mod gamepad_action_tests {
+    use super::*;
+
+    fn reading_context() -> CommandContext {
+        let mut ctx = CommandContext::new(PathBuf::from("."));
+        ctx.wait.wait_message_reveal_then_key();
+        ctx
+    }
+
+    #[test]
+    fn auto_button_preserves_raw_edges_without_dismissing_the_message() {
+        let mut ctx = reading_context();
+        let mut pointer_buttons = 0;
+        apply_joypad_input(&mut ctx, &mut pointer_buttons, 2, true, false);
+        apply_joypad_input(&mut ctx, &mut pointer_buttons, 2, false, false);
+        assert!(ctx.globals.syscom.auto_mode.onoff);
+        assert!(ctx.wait.message_reveal_waiting());
+        assert!(ctx.input.joypad_down_up_stock(2));
+        assert!(!ctx.input.vk_down_up_stock(0x20));
+        assert!(!ctx.input.joypad_mode_active());
+        assert_eq!(pointer_buttons, 0);
+    }
+
+    #[test]
+    fn reboot_unassigned_controls_preserve_raw_edges_and_joypad_mode() {
+        for button in [4, 8, 9, 11] {
+            let mut ctx = reading_context();
+            let mut pointer_buttons = 0;
+            apply_joypad_input(&mut ctx, &mut pointer_buttons, button, true, false);
+            assert!(ctx.input.joypad_mode_active());
+            apply_joypad_input(&mut ctx, &mut pointer_buttons, button, false, false);
+            assert!(ctx.input.joypad_down_up_stock(button));
+            assert!(ctx.input.joypad_mode_active());
+            assert!(!ctx.globals.syscom.msg_back_open);
+            assert!(!ctx.globals.syscom.hide_mwnd.onoff);
+            assert!(ctx.globals.syscom.pending_proc.is_none());
+            assert_eq!(pointer_buttons, 0);
+        }
+    }
+
+    #[test]
+    fn out_of_range_joypad_button_is_ignored_without_panicking() {
+        let mut ctx = reading_context();
+        let mut pointer_buttons = 0;
+        apply_joypad_input(&mut ctx, &mut pointer_buttons, JOYPAD_KEY_COUNT, true, false);
+        apply_joypad_input(&mut ctx, &mut pointer_buttons, usize::MAX, true, false);
+        assert_eq!(pointer_buttons, 0);
+        assert!(!ctx.input.joypad_mode_active());
+    }
+
+    #[test]
+    fn cancelled_auto_release_does_not_toggle_or_leave_a_raw_key_held() {
+        let mut ctx = reading_context();
+        let mut pointer_buttons = 0;
+        apply_joypad_input(&mut ctx, &mut pointer_buttons, 2, true, false);
+        apply_joypad_input(&mut ctx, &mut pointer_buttons, 2, false, true);
+        assert!(ctx.globals.syscom.auto_mode.onoff);
+        assert!(!ctx.input.joypad_is_down(2));
+        assert!(!ctx.input.joypad_up_stock(2));
+        assert_eq!(pointer_buttons, 0);
+    }
 }

@@ -6,6 +6,7 @@
 mod button_navigation;
 pub mod constants;
 pub mod forms;
+pub(crate) mod gamepad;
 pub mod graphics;
 pub mod input;
 pub mod opcode;
@@ -572,6 +573,7 @@ pub struct CommandContext {
     frame_clock_sub_ms_ns: u32,
     last_button_hover_sound_pos: Option<(i32, i32)>,
     stage_button_focus: Option<button_navigation::StageButton>,
+    gamepad_skip_held: bool,
     suppress_next_right_syscom_open: bool,
 }
 
@@ -842,6 +844,7 @@ impl CommandContext {
         self.disp_because_msg_wait_cnt_max = 0;
         self.last_button_hover_sound_pos = None;
         self.stage_button_focus = None;
+        self.gamepad_skip_held = false;
         // The save/load menu runs as an EXCALL scene. Loading replaces that
         // script context without executing EXCALL.FREE, so its ready flag must
         // not select the menu-local stage for later game wipes.
@@ -1213,7 +1216,9 @@ impl CommandContext {
         if script.skip_disable {
             return false;
         }
-        self.skip_because_skip_trigger || self.globals.syscom.read_skip.onoff
+        self.skip_because_skip_trigger
+            || self.globals.syscom.read_skip.onoff
+            || self.gamepad_skip_active()
     }
 
     fn runtime_is_skipping_msg(&self) -> bool {
@@ -1232,7 +1237,9 @@ impl CommandContext {
         if script.skip_disable {
             return false;
         }
-        self.skip_because_skip_trigger || self.globals.syscom.read_skip.onoff
+        self.skip_because_skip_trigger
+            || self.globals.syscom.read_skip.onoff
+            || self.gamepad_skip_active()
     }
 
     fn clear_script_trigger_skip(&mut self) {
@@ -1645,6 +1652,7 @@ impl CommandContext {
             frame_clock_sub_ms_ns: 0,
             last_button_hover_sound_pos: None,
             stage_button_focus: None,
+            gamepad_skip_held: false,
             suppress_next_right_syscom_open: false,
         };
         ctx.set_active_append(initial_append.dir, initial_append.name);
@@ -2435,6 +2443,7 @@ impl CommandContext {
         self.frame_clock_sub_ms_ns = 0;
         self.last_button_hover_sound_pos = None;
         self.stage_button_focus = None;
+        self.gamepad_skip_held = false;
 
         self.set_active_append(append_dir, append_name);
         self.apply_gameexe_runtime_defaults();
@@ -3969,7 +3978,7 @@ impl CommandContext {
         if self.excall_state.ex_call_flag {
             return false;
         }
-        if self.movie.current().is_some() {
+        if self.wait.movie_waiting() || self.globals.mov.playing {
             return false;
         }
         self.globals.syscom.read_skip.onoff = false;

@@ -166,9 +166,30 @@ impl InputState {
         self.joypad_mode_active = true;
     }
 
+    /// Pointer compatibility navigation must not also select a script's native
+    /// joypad branch. This changes the input family without consuming raw edges.
+    pub(crate) fn note_pointer_activity(&mut self) {
+        self.joypad_mode_active = false;
+    }
+
     /// Returns whether a newer-engine joypad key is currently held.
     pub fn joypad_is_down(&self, key_no: usize) -> bool {
         self.joypad_keys.get(key_no).is_some_and(|st| st.down)
+    }
+
+    pub(crate) fn cancel_joypad_key(&mut self, key_no: usize) {
+        if let Some(state) = self.joypad_keys.get_mut(key_no) {
+            state.clear_all();
+        }
+    }
+
+    pub(crate) fn cancel_key(&mut self, key: VmKey) {
+        if let Some(vk) = vmkey_to_vk(key) {
+            self.keys[vk as usize].clear_all();
+        }
+        if self.last_key_down == Some(key) {
+            self.last_key_down = None;
+        }
     }
 
     /// Returns the non-consuming down edge stock for a joypad key.
@@ -631,6 +652,23 @@ mod joypad_mode_tests {
         assert!(input.joypad_mode_active());
         input.on_key_down(VmKey::Enter);
         assert!(!input.joypad_mode_active());
+    }
+
+    #[test]
+    fn cancelled_controller_press_leaves_no_release_action() {
+        let mut input = InputState::default();
+        input.on_key_down(VmKey::Enter);
+        input.on_joypad_key_down(0);
+
+        input.cancel_key(VmKey::Enter);
+        input.cancel_joypad_key(0);
+
+        assert!(!input.is_key_down(VmKey::Enter));
+        assert!(!input.vk_down_stock(0x0D));
+        assert!(!input.vk_up_stock(0x0D));
+        assert!(!input.joypad_is_down(0));
+        assert!(!input.joypad_down_stock(0));
+        assert!(!input.joypad_up_stock(0));
     }
 
     #[test]
